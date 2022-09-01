@@ -22,3 +22,24 @@ Created on Thu Sep  1 16:14:17 2022
 #Final output is a csv file with each row representing a different model input.
 
 
+import sys
+import os
+import argparse
+
+argparser = argparse.ArgumentParser(
+        description="Takes folder of AlphaFold output, and returns csv of metrics on interface between chains")
+
+argparser.add_argument("-F", "--folder", action="store", default=None, type=str,
+    help="Provide path to folder with results for analysis.")
+argparser.add_argument("-A", "--distance", action="store", default=9, type=int,
+    help="Provide maximum distance (angstrom) for considering proximity between residues as interaction. Default=9.")
+
+args = argparser.parse_args(sys.argv[1:])
+
+#Temp stuff
+folder_string = args.folder
+print(folder_string)
+
+distance = args.distance
+print(distance)
+
