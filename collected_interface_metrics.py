@@ -24,7 +24,6 @@ Created on Thu Sep  1 16:14:17 2022
 
 
 import sys
-#import os
 import argparse
 import json
 from math import sqrt
@@ -42,13 +41,16 @@ argparser.add_argument("-F", "--folder", action="store", default=None, type=str,
     help="Provide path to folder with results for analysis.")
 argparser.add_argument("-A", "--distance", action="store", default=9, type=int,
     help="Provide maximum distance (angstrom) for considering proximity between residues as interaction. Default=9.")
-argparser.add_argument("-R", "-reverse_chains", action="store_true",
+argparser.add_argument("-R", "--reverse_chains", action="store_true",
     help="Reverse base chain and comparison chain.")
+argparser.add_argument("-O", "--out_file", action="store", default="af2_interface_metrics", type=str,
+    help="Optional, provide name for output file. Default is 'af2_interface_metrics'. Output file will be .txt")
 
 args = argparser.parse_args(sys.argv[1:])
 folder_string = args.folder
 distance = args.distance
 reverse_chains = args.reverse_chains
+out_file = args.out_file
 
 #Temp stuff
 #Folder used for testing interactively (single run with 5 models): 
@@ -58,33 +60,7 @@ reverse_chains = args.reverse_chains
 #folder_string = "/Users/lhoeg/Documents/Peptide_Interface/Results_2runs/"
 #reverse_chains=False
 #distance = 9
-
-#Function to make distance matrix
-#Default treats shorter of chains as "Chain2", add argument later for reversing chains if flag is True
-#Consider adding log to specify which chain is which
-def dist_mat_from_pdbATOM(ATOM_df, Rev_Bool=False) :
-    chain_letters=ATOM_df.chain_id.unique()
-    
-    top_chain_len=len(ATOM_df.query('chain_id == @chain_letters[0]'))
-    bottom_chain_len=len(ATOM_df.query('chain_id == @chain_letters[1]'))
-    
-    if (top_chain_len > bottom_chain_len and not Rev_Bool) or (top_chain_len < bottom_chain_len and Rev_Bool):
-        chain1_id = chain_letters[0]
-        chain2_id = chain_letters[1]
-    else:
-        chain1_id = chain_letters[1]
-        chain2_id = chain_letters[0]
-    
-    chain1_df = ATOM_df.query('chain_id == @chain1_id')
-    chain2_df = ATOM_df.query('chain_id == @chain2_id')
-    
-    chain1_cb = chain1_df.query('(atom_name == "CB" & residue_name != "GLY") | (atom_name == "CA" & residue_name == "GLY")')
-    chain2_cb = chain2_df.query('(atom_name == "CB" & residue_name != "GLY") | (atom_name == "CA" & residue_name == "GLY")')
-    
-    chain1_coords = chain1_cb[["x_coord", "y_coord", "z_coord"]]
-    chain2_coords = chain2_cb[["x_coord", "y_coord", "z_coord"]]
-    dist_c1_c2 = distance_matrix(chain1_coords, chain2_coords).transpose() #(len(chain2), len(chain1))
-    return dist_c1_c2
+#out_file = "af2_interface_metrics"
 
 def dict_from_pdbATOM(ATOM_df, Rev_Bool=False) :
     pdb_dict = {}
@@ -136,6 +112,11 @@ prefix_lst = [p.sub('', file) for file in error_files]
 p = re.compile(files_string)
 prefix_lst = [p.sub('', file) for file in prefix_lst]
 
+#Initialize output file
+out_file = out_file+".txt"
+out_open = open(out_file, "w")
+out_open.write("AF_Run\tRank\tMean_interface_PAE\tMean_interface_pLDDT\tpDockQ\tiptm\n")
+
 #For each prefix in list, get scores for each model. 
 #Start with rank_1, since that is what is used in the PAE
 for run in prefix_lst :
@@ -151,6 +132,7 @@ for run in prefix_lst :
         #Distance matrix
         #dist_mat = dist_mat_from_pdbATOM(ATOM_df=fpdb_df, Rev_Bool=reverse_chains)
         dist_mat = current_pdb_dict['dist_mat']
+        ch2len = current_pdb_dict['chain2_len']
         #Use distances and distance threshold to determine which interactions are proximal
         prox_dict = {}
         prox_dict['all'] = set()
@@ -166,11 +148,11 @@ for run in prefix_lst :
         
         lddt_scores = np.array(scores['plddt'])
         prox_scores = []
-        if pdb_dict['chain2'] == 0 :
+        if current_pdb_dict['chain2'] == 0 :
             chain2_w_prox = list(prox_dict.keys())[1:]
             prox_scores+=list(lddt_scores[chain2_w_prox])
             chain1_w_prox = list(prox_dict['all'])
-            chain1_prox_ind = [x+current_pdb_dict['chain2_len'] for x in chain1_w_prox]
+            chain1_prox_ind = [x+ch2len for x in chain1_w_prox]
             prox_scores+=list(lddt_scores[chain1_prox_ind])
         else:
             chain2_w_prox = list(prox_dict.keys())[1:]
@@ -188,13 +170,27 @@ for run in prefix_lst :
                 pae_all = json.load(f)[0]
             sqr_mat = int(sqrt(len(pae_all['distance'])))
             error = np.reshape(np.array(pae_all['distance']), (sqr_mat,sqr_mat))
-            #Current position - HERE IN PROGRESS
+            if current_pdb_dict['chain2'] == 0 :
+                error_mat1 = error[0:ch2len,ch2len:]
+                error_mat2 = error[ch2len:,0:ch2len].transpose()
+            else:
+                error_mat1 = error[dist_mat.shape[1]:,0:dist_mat.shape[1]]
+                error_mat2 = error[0:dist_mat.shape[1],dist_mat.shape[1]:].transpose()
+            error_mat_mean = (error_mat1+error_mat2)/2
+            pae_keep = []
+            for ch2 in chain2_w_prox :
+                for ch1 in prox_dict[ch2] :
+                    pae_keep.append(error_mat_mean[ch2,ch1])
+            pae_prox_mean = mean(pae_keep)
         else:
-            mean_prox_pae = "NA"
+            pae_prox_mean = "NA"
+        
+        out_line=run+"\t"+str(rank)+"\t"+str(pae_prox_mean)+"\t"+str(mean_prox_lddt)+"\tTemp_not_done\t"+str(iptm)+"\n"
+        out_open.write(out_line)
 
+out_open.close()
 
-
-
+#Mean interface PAE, Mean interface pLDDT, pDockQ, iptm
 #Trying to figure out from colabfold and alphafold where the distance value in their pae file came from.
 #Since there is a residue1, residue2, and distance, each with enough values for the chain1:chain2 x chain1:chain2 matrix
 #The scores file also has a 'pae' key for the dictionary, which has length chain1:chain2, and each item has chain1:chain2 values, 
