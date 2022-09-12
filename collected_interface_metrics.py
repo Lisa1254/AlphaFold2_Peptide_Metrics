@@ -28,8 +28,10 @@ import sys
 import argparse
 import json
 from math import sqrt
+from statistics import mean
 import glob
 import re
+import numpy as np
 from biopandas.pdb import PandasPdb
 from scipy.spatial import distance_matrix
 
@@ -51,24 +53,27 @@ reverse_chains = args.reverse_chains
 #Temp stuff
 #Folder used for testing interactively (single run with 5 models): 
 #folder_string = "/Users/lhoeg/Documents/Peptide_Interface/AF_result_GFLHVGG_c_zer1"
+#folder_string = "/Users/localadmin/Documents/Reference/Example_AF2_Output"
 #Folder used for testing interactively (two runs with 5 models each): 
 #folder_string = "/Users/lhoeg/Documents/Peptide_Interface/Results_2runs/"
+#reverse_chains=False
+#distance = 9
 
 #Function to make distance matrix
 #Default treats shorter of chains as "Chain2", add argument later for reversing chains if flag is True
 #Consider adding log to specify which chain is which
-def dist_mat_from_pdbATOM(ATOM_df, RevCh=False) :
+def dist_mat_from_pdbATOM(ATOM_df, Rev_Bool=False) :
     chain_letters=ATOM_df.chain_id.unique()
     
     top_chain_len=len(ATOM_df.query('chain_id == @chain_letters[0]'))
     bottom_chain_len=len(ATOM_df.query('chain_id == @chain_letters[1]'))
     
-    if (top_len > bottom_len and not Rev_Bool) or (top_len < bottom_len and Rev_Bool):
-        chain1_id = chain_letters[1]
-        chain2_id = chain_letters[0]
-    else:
+    if (top_chain_len > bottom_chain_len and not Rev_Bool) or (top_chain_len < bottom_chain_len and Rev_Bool):
         chain1_id = chain_letters[0]
         chain2_id = chain_letters[1]
+    else:
+        chain1_id = chain_letters[1]
+        chain2_id = chain_letters[0]
     
     chain1_df = ATOM_df.query('chain_id == @chain1_id')
     chain2_df = ATOM_df.query('chain_id == @chain2_id')
@@ -81,7 +86,37 @@ def dist_mat_from_pdbATOM(ATOM_df, RevCh=False) :
     dist_c1_c2 = distance_matrix(chain1_coords, chain2_coords).transpose() #(len(chain2), len(chain1))
     return dist_c1_c2
 
-#Ge
+def dict_from_pdbATOM(ATOM_df, Rev_Bool=False) :
+    pdb_dict = {}
+
+    chain_letters=ATOM_df.chain_id.unique()
+    
+    top_chain_len=len(ATOM_df.query('chain_id == @chain_letters[0]'))
+    bottom_chain_len=len(ATOM_df.query('chain_id == @chain_letters[1]'))
+    
+    if (top_chain_len > bottom_chain_len and not Rev_Bool) or (top_chain_len < bottom_chain_len and Rev_Bool):
+        chain1_id = chain_letters[0]
+        chain2_id = chain_letters[1]
+        pdb_dict['chain2'] = 1
+    else:
+        chain1_id = chain_letters[1]
+        chain2_id = chain_letters[0]
+        pdb_dict['chain2'] = 0
+    
+    chain1_df = ATOM_df.query('chain_id == @chain1_id')
+    chain2_df = ATOM_df.query('chain_id == @chain2_id')
+    
+    chain1_cb = chain1_df.query('(atom_name == "CB" & residue_name != "GLY") | (atom_name == "CA" & residue_name == "GLY")')
+    chain2_cb = chain2_df.query('(atom_name == "CB" & residue_name != "GLY") | (atom_name == "CA" & residue_name == "GLY")')
+    
+    chain1_coords = chain1_cb[["x_coord", "y_coord", "z_coord"]]
+    chain2_coords = chain2_cb[["x_coord", "y_coord", "z_coord"]]
+    dist_c1_c2 = distance_matrix(chain1_coords, chain2_coords).transpose() #(len(chain2), len(chain1))
+    pdb_dict['dist_mat'] = dist_c1_c2
+    pdb_dict['chain2_len'] = dist_c1_c2.shape[0]
+    return pdb_dict
+
+#Specify all files in provided folder as search parameters
 if folder_string.endswith("/") :
     files_string = folder_string+"*"
 else: 
@@ -112,30 +147,53 @@ for run in prefix_lst :
         fpdb = PandasPdb()
         fpdb.read_pdb(current_pdb)
         fpdb_df=fpdb.df['ATOM']
+        current_pdb_dict = dict_from_pdbATOM(fpdb_df, Rev_Bool=reverse_chains)
         #Distance matrix
-        dist_mat = dist_mat_from_pdbATOM(fpdb_df)
+        #dist_mat = dist_mat_from_pdbATOM(ATOM_df=fpdb_df, Rev_Bool=reverse_chains)
+        dist_mat = current_pdb_dict['dist_mat']
         #Use distances and distance threshold to determine which interactions are proximal
+        prox_dict = {}
+        prox_dict['all'] = set()
+        for row in range(0,dist_mat.shape[0]):
+            if np.any(dist_mat[row] < distance):
+                col_ind_prox = np.where(dist_mat[row] < distance)[0]
+                prox_dict[row] = col_ind_prox
+                prox_dict['all'] = set(list(prox_dict['all'])+list(col_ind_prox))
         #Get scores
         current_scores = [file for file in model_scores if "rank_"+str(rank) in file][0]
         with open(current_scores, 'r') as f:
             scores = json.load(f)
-        #Something about reading the json
-        #Use distances to get score
-
         
-        if rank == 1 :
-            print("Working on rank 1 (include PAE)")
+        lddt_scores = np.array(scores['plddt'])
+        prox_scores = []
+        if pdb_dict['chain2'] == 0 :
+            chain2_w_prox = list(prox_dict.keys())[1:]
+            prox_scores+=list(lddt_scores[chain2_w_prox])
+            chain1_w_prox = list(prox_dict['all'])
+            chain1_prox_ind = [x+current_pdb_dict['chain2_len'] for x in chain1_w_prox]
+            prox_scores+=list(lddt_scores[chain1_prox_ind])
         else:
-            print("Working on rank "+str(rank)+" use NA instead of PAE")
+            chain2_w_prox = list(prox_dict.keys())[1:]
+            chain2_prox_ind = [x+dist_mat.shape[1] for x in chain2_w_prox]
+            prox_scores+=list(lddt_scores[chain2_prox_ind])
+            chain1_w_prox = list(prox_dict['all'])
+            prox_scores+=list(lddt_scores[chain1_w_prox])
+        
+        mean_prox_lddt = mean(prox_scores)
+        iptm = scores['ptm']
+
+        if rank == 1 :
+            current_pae = [file for file in error_files if run in file][0]
+            with open(current_pae, 'r') as f:
+                pae_all = json.load(f)[0]
+            sqr_mat = int(sqrt(len(pae_all['distance'])))
+            error = np.reshape(np.array(pae_all['distance']), (sqr_mat,sqr_mat))
+            #Current position - HERE IN PROGRESS
+        else:
+            mean_prox_pae = "NA"
 
 
-#current_pae = [file for file in error_files if run in file][0]
-#with open(current_pae, 'r') as f:
-#    pae = json.load(f)[0]
 
-#This will need to be adjusted for knowing what the square size is
-#error = np.reshape(np.array(pae['distance']), (508,508)) 
-#Use sqrt(len(pae['distance'])) to get value instead of 508
 
 #Trying to figure out from colabfold and alphafold where the distance value in their pae file came from.
 #Since there is a residue1, residue2, and distance, each with enough values for the chain1:chain2 x chain1:chain2 matrix
