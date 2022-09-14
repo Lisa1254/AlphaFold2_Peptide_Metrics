@@ -44,13 +44,16 @@ argparser.add_argument("-A", "--distance", action="store", default=9, type=int,
 argparser.add_argument("-R", "--reverse_chains", action="store_true",
     help="Reverse base chain and comparison chain.")
 argparser.add_argument("-O", "--out_file", action="store", default="af2_interface_metrics", type=str,
-    help="Optional, provide name for output file. Default is 'af2_interface_metrics'. Output file will be .txt")
+    help="Optional, provide name for output file. Default is 'af2_interface_metrics'. Output file will be .txt if selecting tsv output filetype (default), or .csv if using csv as output filetype.")
+argparser.add_argument("-C", "--out_file_csv", action="store_true",
+    help="If selected, output will be 'csv' filetype. Otherwise 'tsv' filetype will be used")
 
 args = argparser.parse_args(sys.argv[1:])
 folder_string = args.folder
 distance = args.distance
 reverse_chains = args.reverse_chains
 out_file = args.out_file
+out_delim_type=args.out_file_csv
 
 #Temp stuff
 #Folder used for testing interactively (single run with 5 models): 
@@ -61,6 +64,12 @@ out_file = args.out_file
 #reverse_chains=False
 #distance = 9
 #out_file = "af2_interface_metrics"
+
+#pdockQ stuff:
+#pdockQ = L / (1 + np.exp(-k*(x-x0)))+b
+#L= 0.724 x0= 152.611 k= 0.052 and b= 0.018
+#Are these constants all standard? Or are they particular to the paper?
+
 
 def dict_from_pdbATOM(ATOM_df, Rev_Bool=False) :
     pdb_dict = {}
@@ -113,9 +122,17 @@ p = re.compile(files_string)
 prefix_lst = [p.sub('', file) for file in prefix_lst]
 
 #Initialize output file
-out_file = out_file+".txt"
+if out_delim_type :
+    ods=","
+    out_file = out_file+".csv"
+else :
+    ods="\t"
+    out_file = out_file+".txt"
+
+
 out_open = open(out_file, "w")
-out_open.write("AF_Run\tRank\tMean_interface_PAE\tMean_interface_pLDDT\tpDockQ\tiptm\n")
+init_line="AF_Run"+ods+"Rank"+ods+"Mean_interface_PAE"+ods+"Mean_interface_pLDDT"+ods+"pDockQ"+ods+"iptm\n"
+out_open.write(init_line)
 
 #For each prefix in list, get scores for each model. 
 #Start with rank_1, since that is what is used in the PAE
@@ -185,7 +202,7 @@ for run in prefix_lst :
         else:
             pae_prox_mean = "NA"
         
-        out_line=run+"\t"+str(rank)+"\t"+str(pae_prox_mean)+"\t"+str(mean_prox_lddt)+"\tTemp_not_done\t"+str(iptm)+"\n"
+        out_line=run+ods+str(rank)+ods+str(pae_prox_mean)+ods+str(mean_prox_lddt)+ods+"Temp_not_done"+ods+str(iptm)+"\n"
         out_open.write(out_line)
 
 out_open.close()
