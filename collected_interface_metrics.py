@@ -4,35 +4,30 @@
 Created on Thu Sep  1 16:14:17 2022
 
 @author: lhoeg
+
+Required input: path to folder with AlphaFold2 outputs, including pdb and scores file for each model, and a predicted_aligned_error file for each AF2 run. 
+
+Output will be either a comma or tab delimited file with Run, Rank, Mean Interface PAE, Mean Interface pLDDT, pDockQ, and iptm for each model.
+
+Default minimum distance for interaction is 9 Angstroms.
+
+Use -h to access help and more options.
+
+See https://www.nature.com/articles/s41467-022-28865-w and https://gitlab.com/ElofssonLab/FoldDock for more information about pDockQ.
+
 """
-
-#Input files: PDB, scores.json (is this the same as what alphafold buts into b_factor column of pdb?), pae.json
-#Input parameters: Folder with above input files (F), interface distance (A)
-#Alternative for future development, prefix of files to match, since for each input run, AF@ returns files with same prefix
-
-#Output: csv of error metrics for each input model
-#Metrics: Mean interface PAE, Mean interface pLDDT, pDockQ, iptm
-
-#PAE should be summarized from both interaction quadrants (bottom-left and top-right)
-#Get mean PAE from interacting residues, as in previous script, then take average for whole site of interaction
-#Mean interface pLDDT: this is in the scores file, as well as b_factor column of pdb. Using pdb for convenience
-#pDockQ is like in the NatureComm paper. Using code as described on gitlab for ElofssonLab
-#iptm is that last field in the scores.json file
-
-#Each model input will have one row output with each of these metrics as csv's
-#Final output is a tsv or csv file with each row representing a different model input.
 
 
 import sys
 import argparse
 import json
-from math import sqrt
 from statistics import mean
 import glob
 import re
 import numpy as np
 from biopandas.pdb import PandasPdb
 from scipy.spatial import distance_matrix
+from datetime import datetime
 
 argparser = argparse.ArgumentParser(
         description="Takes folder of AlphaFold output, and returns csv of metrics on interface between chains")
@@ -45,15 +40,25 @@ argparser.add_argument("-O", "--out_file", action="store", default="af2_interfac
     help="Optional, provide name for output file. Default is 'af2_interface_metrics'. Output file will be .txt if selecting tsv output filetype (default), or .csv if using csv as output filetype.")
 argparser.add_argument("-C", "--out_file_csv", action="store_true",
     help="If selected, output will be 'csv' filetype. Otherwise 'tsv' filetype will be used")
+argparser.add_argument("-L", "--logfile", action="store_true",
+    help="If selected, a logfile will be produced detailing which models have been run")
+argparser.add_argument("-V", "--verbose", action="store_true",
+    help="If selected, current run being analysed will be printed to the terminal.")
 
 args = argparser.parse_args(sys.argv[1:])
 folder_string = args.folder
 distance = args.distance
 out_file = args.out_file
 out_delim_type=args.out_file_csv
+logfile = args.logfile
+terminal_v = args.verbose
 
 
-def dict_from_pdbATOM(ATOM_df) :
+def dict_from_pdbATOM(pdb) :
+    fpdb = PandasPdb()
+    fpdb.read_pdb(pdb)
+    ATOM_df=fpdb.df['ATOM']
+    
     pdb_dict = {}
     chain_letters=ATOM_df.chain_id.unique()
     
@@ -72,12 +77,32 @@ def dict_from_pdbATOM(ATOM_df) :
     chain1_plddt = chain1_cb[['b_factor']]
     chain2_plddt = chain2_cb[['b_factor']]
     pdb_dict['dist_mat'] = dist_c1_c2
-    #pdb_dict['chain2_len'] = dist_c1_c2.shape[0]
     pdb_dict['chain1_plddt'] = chain1_plddt
     pdb_dict['chain2_plddt'] = chain2_plddt
     pdb_dict['chain1_id'] = chain1_id
     pdb_dict['chain2_id'] = chain2_id
     return pdb_dict
+
+def mean_if_pae(len_ch1, paes, interfaces) :
+    error = np.array(paes)
+    rounded_errors = np.round(error.astype(np.float64), decimals=1)
+    error_TR = rounded_errors[len_ch1:,0:len_ch1].transpose()
+    error_BL = rounded_errors[0:len_ch1,len_ch1:]
+    error_mat_mean = (error_TR+error_BL)/2
+    if contacts.shape[0]<1:
+        avg_if_pae = "NA"
+    else:
+        pae_keep = []
+        for con in interfaces :
+            pae_keep.append(error_mat_mean[con[0],con[1]])
+        avg_if_pae = mean(pae_keep)
+    return avg_if_pae
+
+def calc_pdockq(mean_plddt_interfaces, interfaces):
+    n_if_contacts = interfaces.shape[0]
+    x = mean_plddt_interfaces*np.log10(n_if_contacts)
+    pdockq = 0.724 / (1 + np.exp(-0.052*(x-152.611)))+0.018
+    return pdockq
 
 #Specify all files in provided folder as search parameters
 if folder_string.endswith("/") :
@@ -98,8 +123,10 @@ p = re.compile(r'_predicted_aligned_error_v1.json')
 prefix_lst = [p.sub('', file) for file in error_files]
 p = re.compile(files_string)
 prefix_lst = [p.sub('', file) for file in prefix_lst]
+prefix_lst.sort()
+n_runs = len(prefix_lst)
 
-#Initialize output file
+#Initialize output file(s)
 if out_delim_type :
     ods=","
     out_file = out_file+".csv"
@@ -107,68 +134,77 @@ else :
     ods="\t"
     out_file = out_file+".txt"
 
-
 out_open = open(out_file, "w")
 init_line="AF_Run"+ods+"Rank"+ods+"Mean_interface_PAE"+ods+"Mean_interface_pLDDT"+ods+"pDockQ"+ods+"iptm\n"
 out_open.write(init_line)
 
+now = datetime.now()
+date_time = now.strftime("%Y/%m/%d, %H:%M:%S")
+if logfile:
+    log_outfile = "log_AF2Metrics_"+now.strftime("%m")+"_"+now.strftime("%d")+"_"+now.strftime("%H")+"_"+now.strftime("%M")+".txt"
+    log_open = open(log_outfile, 'w')
+    log_open.write("Running collected_interface_metrics.py script, using the following parameters:\n-F\t"+folder_string+"\n-A\t"+str(distance)+"\n-O\t"+out_file+"\n-C\t"+str(out_delim_type)+"\n\nStarting AF2 chain interface analysis at "+date_time+" for "+str(n_runs)+" detected runs.\n\n")
+
+if terminal_v:
+    print("Starting AF2 chain interface analysis at "+date_time+" for "+str(n_runs)+" detected runs.\n")
+
 #For each prefix in list, get scores for each model. 
-#Start with rank_1, since that is what is used in the PAE
+#Start with rank_1 for consistency
 for run in prefix_lst :
+    if logfile:
+        log_open.write("Starting chain interface analysis for "+run+"\n")
+    if terminal_v:
+        print("Starting chain interface analysis for "+run+"\n")
+    
     model_pdbs = [file for file in pdb_files if run in file]
     model_scores = [file for file in scores_files if run in file]
     for rank in range(1,len(model_pdbs)+1) :
+        
         #Get pdb file & associated data
         current_pdb = [file for file in model_pdbs if "rank_"+str(rank) in file][0]
-        fpdb = PandasPdb()
-        fpdb.read_pdb(current_pdb)
-        fpdb_df=fpdb.df['ATOM']
-        current_pdb_dict = dict_from_pdbATOM(fpdb_df)
+        current_pdb_dict = dict_from_pdbATOM(current_pdb)
+        
         #Distance matrix
         dist_mat = current_pdb_dict['dist_mat']
+        
         #Use distances and distance threshold to determine which interactions are proximal
         contacts = np.argwhere(dist_mat<=distance)
-        #Use interface to determine if_plddt and pdockQ
+        
+        #Use interface to determine interface plddt
         plddt1, plddt2 = np.array(current_pdb_dict['chain1_plddt']), np.array(current_pdb_dict['chain2_plddt'])
         if contacts.shape[0]<1:
-            pdockq=0
-            ppv=0
             avg_if_plddt=0
+            pdockq=0
         else:
             avg_if_plddt = np.average(np.concatenate([plddt1[np.unique(contacts[:,0])], plddt2[np.unique(contacts[:,1])]]))
-            n_if_contacts = contacts.shape[0]
-            x = avg_if_plddt*np.log10(n_if_contacts)
-            pdockq = 0.724 / (1 + np.exp(-0.052*(x-152.611)))+0.018
-        #Get ptm score
+            pdockq = calc_pdockq(avg_if_plddt, contacts)
+        
+        #Get iptm score
         current_scores = [file for file in model_scores if "rank_"+str(rank) in file][0]
         with open(current_scores, 'r') as f:
             scores = json.load(f)
         
-        iptm = scores['ptm']
-
-        if rank == 1 :
-            current_pae = [file for file in error_files if run in file][0]
-            with open(current_pae, 'r') as f:
-                pae_all = json.load(f)[0]
-            sqr_mat = int(sqrt(len(pae_all['distance'])))
-            error = np.reshape(np.array(pae_all['distance']), (sqr_mat,sqr_mat))
-            l_c1 = len(plddt1)
-            error_TR = error[l_c1:,0:l_c1].transpose()
-            error_BL = error[0:l_c1,l_c1:]
-            error_mat_mean = (error_TR+error_BL)/2
-            if contacts.shape[0]<1:
-                avg_if_pae = "NA"
-            else:
-                pae_keep = []
-                for con in contacts :
-                    pae_keep.append(error_mat_mean[con[0],con[1]])
-                avg_if_pae = mean(pae_keep)
-        else:
-            avg_if_pae = "NA"
+        #Get mean interface PAE
+        l_c1 = len(plddt1)
+        avg_if_pae = mean_if_pae(l_c1, scores['pae'], contacts)
+        
+        #Get iptm
+        iptm = scores['iptm']
+        
         
         out_line=run+ods+str(rank)+ods+str(avg_if_pae)+ods+str(avg_if_plddt)+ods+str(pdockq)+ods+str(iptm)+"\n"
         out_open.write(out_line)
 
 out_open.close()
+
+now1 = datetime.now()
+date_time1 = now1.strftime("%Y/%m/%d, %H:%M:%S")
+if logfile:
+    log_open.write("\nFinished at "+date_time1+".\n")
+    log_open.close()
+
+if terminal_v:
+    print("Finished at "+date_time1+".\n")
+
 
 
