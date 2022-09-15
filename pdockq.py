@@ -23,6 +23,7 @@ plddt1, plddt2 = chain_plddt[ch1], chain_plddt[ch2]
 
 mat = np.append(coords1, coords2,axis=0)
 a_min_b = mat[:,np.newaxis,:] -mat[np.newaxis,:,:]
+#Note: the transpose argument in this command makes the resulting array the transpose of the way that I've been using it in my scripts. If I omit the transpose here, then be sure to swap the order of plddt1 & plddt2 in the avg_if_plddt command below.
 dists = np.sqrt(np.sum(a_min_b.T ** 2, axis=0)).T
 
 l1 = len(coords1)
@@ -35,6 +36,7 @@ if contacts.shape[0]<1:
     ppv=0 #Might end up removing PPV Stuff
 else:
     avg_if_plddt = np.average(np.concatenate([plddt1[np.unique(contacts[:,0])], plddt2[np.unique(contacts[:,1])]]))
+    #avg_if_plddt = np.average(np.concatenate([plddt2[np.unique(contacts[:,0])], plddt1[np.unique(contacts[:,1])]])) #for if not transposing array above
     n_if_contacts = contacts.shape[0]
     x = avg_if_plddt*np.log10(n_if_contacts)
     pdockq = 0.724 / (1 + np.exp(-0.052*(x-152.611)))+0.018

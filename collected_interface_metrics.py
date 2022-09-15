@@ -15,12 +15,12 @@ Created on Thu Sep  1 16:14:17 2022
 
 #PAE should be summarized from both interaction quadrants (bottom-left and top-right)
 #Get mean PAE from interacting residues, as in previous script, then take average for whole site of interaction
-#Mean interface pLDDT: this is in the scores file, but might also be found in the pdb??
-#pDockQ is like in the NatureComm paper. I've saved their script as pdockq_ElofssonLab.py to see what they do
+#Mean interface pLDDT: this is in the scores file, as well as b_factor column of pdb. Using pdb for convenience
+#pDockQ is like in the NatureComm paper. Using code as described on gitlab for ElofssonLab
 #iptm is that last field in the scores.json file
 
 #Each model input will have one row output with each of these metrics as csv's
-#Final output is a csv file with each row representing a different model input.
+#Final output is a tsv or csv file with each row representing a different model input.
 
 
 import sys
@@ -41,8 +41,6 @@ argparser.add_argument("-F", "--folder", action="store", default=None, type=str,
     help="Provide path to folder with results for analysis.")
 argparser.add_argument("-A", "--distance", action="store", default=9, type=int,
     help="Provide maximum distance (angstrom) for considering proximity between residues as interaction. Default=9.")
-argparser.add_argument("-R", "--reverse_chains", action="store_true",
-    help="Reverse base chain and comparison chain.")
 argparser.add_argument("-O", "--out_file", action="store", default="af2_interface_metrics", type=str,
     help="Optional, provide name for output file. Default is 'af2_interface_metrics'. Output file will be .txt if selecting tsv output filetype (default), or .csv if using csv as output filetype.")
 argparser.add_argument("-C", "--out_file_csv", action="store_true",
@@ -51,42 +49,16 @@ argparser.add_argument("-C", "--out_file_csv", action="store_true",
 args = argparser.parse_args(sys.argv[1:])
 folder_string = args.folder
 distance = args.distance
-reverse_chains = args.reverse_chains
 out_file = args.out_file
 out_delim_type=args.out_file_csv
 
-#Temp stuff
-#Folder used for testing interactively (single run with 5 models): 
-#folder_string = "/Users/lhoeg/Documents/Peptide_Interface/AF_result_GFLHVGG_c_zer1"
-#folder_string = "/Users/localadmin/Documents/Reference/Example_AF2_Output"
-#Folder used for testing interactively (two runs with 5 models each): 
-#folder_string = "/Users/lhoeg/Documents/Peptide_Interface/Results_2runs/"
-#reverse_chains=False
-#distance = 9
-#out_file = "af2_interface_metrics"
 
-#pdockQ stuff:
-#pdockQ = L / (1 + np.exp(-k*(x-x0)))+b
-#L= 0.724 x0= 152.611 k= 0.052 and b= 0.018
-#Are these constants all standard? Or are they particular to the paper?
-
-
-def dict_from_pdbATOM(ATOM_df, Rev_Bool=False) :
+def dict_from_pdbATOM(ATOM_df) :
     pdb_dict = {}
-
     chain_letters=ATOM_df.chain_id.unique()
     
-    top_chain_len=len(ATOM_df.query('chain_id == @chain_letters[0]'))
-    bottom_chain_len=len(ATOM_df.query('chain_id == @chain_letters[1]'))
-    
-    if (top_chain_len > bottom_chain_len and not Rev_Bool) or (top_chain_len < bottom_chain_len and Rev_Bool):
-        chain1_id = chain_letters[0]
-        chain2_id = chain_letters[1]
-        pdb_dict['chain2'] = 1
-    else:
-        chain1_id = chain_letters[1]
-        chain2_id = chain_letters[0]
-        pdb_dict['chain2'] = 0
+    chain1_id = chain_letters[0]
+    chain2_id = chain_letters[1]
     
     chain1_df = ATOM_df.query('chain_id == @chain1_id')
     chain2_df = ATOM_df.query('chain_id == @chain2_id')
@@ -96,9 +68,15 @@ def dict_from_pdbATOM(ATOM_df, Rev_Bool=False) :
     
     chain1_coords = chain1_cb[["x_coord", "y_coord", "z_coord"]]
     chain2_coords = chain2_cb[["x_coord", "y_coord", "z_coord"]]
-    dist_c1_c2 = distance_matrix(chain1_coords, chain2_coords).transpose() #(len(chain2), len(chain1))
+    dist_c1_c2 = distance_matrix(chain1_coords, chain2_coords)
+    chain1_plddt = chain1_cb[['b_factor']]
+    chain2_plddt = chain2_cb[['b_factor']]
     pdb_dict['dist_mat'] = dist_c1_c2
-    pdb_dict['chain2_len'] = dist_c1_c2.shape[0]
+    #pdb_dict['chain2_len'] = dist_c1_c2.shape[0]
+    pdb_dict['chain1_plddt'] = chain1_plddt
+    pdb_dict['chain2_plddt'] = chain2_plddt
+    pdb_dict['chain1_id'] = chain1_id
+    pdb_dict['chain2_id'] = chain2_id
     return pdb_dict
 
 #Specify all files in provided folder as search parameters
@@ -140,45 +118,32 @@ for run in prefix_lst :
     model_pdbs = [file for file in pdb_files if run in file]
     model_scores = [file for file in scores_files if run in file]
     for rank in range(1,len(model_pdbs)+1) :
-        #Get pdb file
+        #Get pdb file & associated data
         current_pdb = [file for file in model_pdbs if "rank_"+str(rank) in file][0]
         fpdb = PandasPdb()
         fpdb.read_pdb(current_pdb)
         fpdb_df=fpdb.df['ATOM']
-        current_pdb_dict = dict_from_pdbATOM(fpdb_df, Rev_Bool=reverse_chains)
+        current_pdb_dict = dict_from_pdbATOM(fpdb_df)
         #Distance matrix
-        #dist_mat = dist_mat_from_pdbATOM(ATOM_df=fpdb_df, Rev_Bool=reverse_chains)
         dist_mat = current_pdb_dict['dist_mat']
-        ch2len = current_pdb_dict['chain2_len']
         #Use distances and distance threshold to determine which interactions are proximal
-        prox_dict = {}
-        prox_dict['all'] = set()
-        for row in range(0,dist_mat.shape[0]):
-            if np.any(dist_mat[row] < distance):
-                col_ind_prox = np.where(dist_mat[row] < distance)[0]
-                prox_dict[row] = col_ind_prox
-                prox_dict['all'] = set(list(prox_dict['all'])+list(col_ind_prox))
-        #Get scores
+        contacts = np.argwhere(dist_mat<=distance)
+        #Use interface to determine if_plddt and pdockQ
+        plddt1, plddt2 = np.array(current_pdb_dict['chain1_plddt']), np.array(current_pdb_dict['chain2_plddt'])
+        if contacts.shape[0]<1:
+            pdockq=0
+            ppv=0
+            avg_if_plddt=0
+        else:
+            avg_if_plddt = np.average(np.concatenate([plddt1[np.unique(contacts[:,0])], plddt2[np.unique(contacts[:,1])]]))
+            n_if_contacts = contacts.shape[0]
+            x = avg_if_plddt*np.log10(n_if_contacts)
+            pdockq = 0.724 / (1 + np.exp(-0.052*(x-152.611)))+0.018
+        #Get ptm score
         current_scores = [file for file in model_scores if "rank_"+str(rank) in file][0]
         with open(current_scores, 'r') as f:
             scores = json.load(f)
         
-        lddt_scores = np.array(scores['plddt'])
-        prox_scores = []
-        if current_pdb_dict['chain2'] == 0 :
-            chain2_w_prox = list(prox_dict.keys())[1:]
-            prox_scores+=list(lddt_scores[chain2_w_prox])
-            chain1_w_prox = list(prox_dict['all'])
-            chain1_prox_ind = [x+ch2len for x in chain1_w_prox]
-            prox_scores+=list(lddt_scores[chain1_prox_ind])
-        else:
-            chain2_w_prox = list(prox_dict.keys())[1:]
-            chain2_prox_ind = [x+dist_mat.shape[1] for x in chain2_w_prox]
-            prox_scores+=list(lddt_scores[chain2_prox_ind])
-            chain1_w_prox = list(prox_dict['all'])
-            prox_scores+=list(lddt_scores[chain1_w_prox])
-        
-        mean_prox_lddt = mean(prox_scores)
         iptm = scores['ptm']
 
         if rank == 1 :
@@ -187,28 +152,23 @@ for run in prefix_lst :
                 pae_all = json.load(f)[0]
             sqr_mat = int(sqrt(len(pae_all['distance'])))
             error = np.reshape(np.array(pae_all['distance']), (sqr_mat,sqr_mat))
-            if current_pdb_dict['chain2'] == 0 :
-                error_mat1 = error[0:ch2len,ch2len:]
-                error_mat2 = error[ch2len:,0:ch2len].transpose()
+            l_c1 = len(plddt1)
+            error_TR = error[l_c1:,0:l_c1].transpose()
+            error_BL = error[0:l_c1,l_c1:]
+            error_mat_mean = (error_TR+error_BL)/2
+            if contacts.shape[0]<1:
+                avg_if_pae = "NA"
             else:
-                error_mat1 = error[dist_mat.shape[1]:,0:dist_mat.shape[1]]
-                error_mat2 = error[0:dist_mat.shape[1],dist_mat.shape[1]:].transpose()
-            error_mat_mean = (error_mat1+error_mat2)/2
-            pae_keep = []
-            for ch2 in chain2_w_prox :
-                for ch1 in prox_dict[ch2] :
-                    pae_keep.append(error_mat_mean[ch2,ch1])
-            pae_prox_mean = mean(pae_keep)
+                pae_keep = []
+                for con in contacts :
+                    pae_keep.append(error_mat_mean[con[0],con[1]])
+                avg_if_pae = mean(pae_keep)
         else:
-            pae_prox_mean = "NA"
+            avg_if_pae = "NA"
         
-        out_line=run+ods+str(rank)+ods+str(pae_prox_mean)+ods+str(mean_prox_lddt)+ods+"Temp_not_done"+ods+str(iptm)+"\n"
+        out_line=run+ods+str(rank)+ods+str(avg_if_pae)+ods+str(avg_if_plddt)+ods+str(pdockq)+ods+str(iptm)+"\n"
         out_open.write(out_line)
 
 out_open.close()
 
-#Mean interface PAE, Mean interface pLDDT, pDockQ, iptm
-#Trying to figure out from colabfold and alphafold where the distance value in their pae file came from.
-#Since there is a residue1, residue2, and distance, each with enough values for the chain1:chain2 x chain1:chain2 matrix
-#The scores file also has a 'pae' key for the dictionary, which has length chain1:chain2, and each item has chain1:chain2 values, 
-#So maybe this relates to the res1 or res2 or distance somehow? Maybe I can calculate for each of the models where it is not provided?
+
