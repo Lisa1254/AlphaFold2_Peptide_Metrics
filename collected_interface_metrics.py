@@ -156,8 +156,8 @@ for run in prefix_lst :
     if terminal_v:
         print("Starting chain interface analysis for "+run+"\n")
     
-    model_pdbs = [file for file in pdb_files if run in file]
-    model_scores = [file for file in scores_files if run in file]
+    model_pdbs = [file for file in pdb_files if run + '_' in file]
+    model_scores = [file for file in scores_files if run + '_' in file]
     for rank in range(1,len(model_pdbs)+1) :
         
         #Get pdb file & associated data
